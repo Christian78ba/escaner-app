@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Escáner de códigos - POS</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: #111827; color: #f9fafb; min-height: 100vh; display: flex; flex-direction: column; }
+  header { padding: 12px 16px; background: #1f2937; display: flex; align-items: center; gap: 10px; justify-content: space-between; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 700; }
+  select { max-width: 55%; padding: 6px 8px; border-radius: 8px; border: 1px solid #4b5563; background: #111827; color: #f9fafb; font-size: 12px; }
+  #reader { width: 100%; max-width: 520px; margin: 12px auto 0; }
+  #estado { margin: 12px 16px 4px; padding: 12px; border-radius: 12px; background: #374151; text-align: center; font-size: 14px; font-weight: 600; }
+  #estado.ok { background: #065f46; }
+  #estado.error { background: #991b1b; }
+  #estado.aviso { background: #92400e; }
+  p.ayuda { margin: 8px 16px 16px; font-size: 12px; color: #9ca3af; text-align: center; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>&#128247; Escáner de códigos</h1>
+    <select id="camara" title="Cámara" style="display:none"></select>
+  </header>
+  <div id="reader"></div>
+  <div id="estado">Iniciando cámara...</div>
+  <p class="ayuda">Acercá el código de barras a la cámara. Cada lectura se envía sola al POS. Dejá esta ventana abierta mientras vendés; se cierra sola cuando cerrás el POS.</p>
+
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <script>
+  (function () {
+    var COOLDOWN_MS = 2500;      // misma lectura repetida dentro de este lapso se ignora
+    var ultimo = { codigo: '', t: 0 };
+    var scanner = null;
+    var iniciando = false;
+    var el = function (id) { return document.getElementById(id); };
+
+    function estado(texto, tipo) {
+      el('estado').textContent = texto;
+      el('estado').className = tipo || '';
+    }
+
+    function beep(grave) {
+      try {
+        var Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return;
+        beep.ctx = beep.ctx || new Ctx();
+        var o = beep.ctx.createOscillator(), g = beep.ctx.createGain();
+        o.connect(g); g.connect(beep.ctx.destination);
+        o.frequency.value = grave ? 220 : 880;
+        g.gain.value = 0.08;
+        o.start();
+        o.stop(beep.ctx.currentTime + (grave ? 0.25 : 0.12));
+      } catch (e) {}
+    }
+
+    function hayPOS() { return window.opener && !window.opener.closed; }
+
+    function enviar(codigo) {
+      if (!hayPOS()) {
+        estado('Se perdió la conexión con el POS. Cerrá esta ventana y volvé a abrirla desde el POS.', 'error');
+        return;
+      }
+      // El POS valida que el mensaje venga de esta página; acá solo viaja el texto del código leído.
+      window.opener.postMessage({ tipo: 'sc-escaner', codigo: codigo }, '*');
+    }
+
+    function alDetectar(texto) {
+      var codigo = String(texto || '').trim();
+      if (!codigo) return;
+      var ahora = Date.now();
+      if (codigo === ultimo.codigo && ahora - ultimo.t < COOLDOWN_MS) return;
+      ultimo = { codigo: codigo, t: ahora };
+      beep(false);
+      estado('Leído: ' + codigo, 'ok');
+      enviar(codigo);
+    }
+
+    // Respuestas del POS (agregado / no registrado / sin stock...)
+    window.addEventListener('message', function (ev) {
+      if (ev.source !== window.opener) return;
+      var d = ev.data || {};
+      if (d.tipo !== 'sc-escaner-estado') return;
+      estado(String(d.texto || ''), d.ok === false ? 'aviso' : 'ok');
+      if (d.ok === false) beep(true);
+    });
+
+    function mensajeError(err) {
+      var n = (err && (err.name || err.message || err)) + '';
+      if (/NotAllowed|Permission/i.test(n)) return 'Permiso de cámara denegado. Tocá el candado de la barra de direcciones, elegí Cámara > Permitir y recargá la página.';
+      if (/NotFound|DevicesNotFound/i.test(n)) return 'No se encontró ninguna cámara conectada.';
+      if (/NotReadable|TrackStart/i.test(n)) return 'La cámara está siendo usada por otra aplicación. Cerrala e intentá de nuevo.';
+      return 'No se pudo iniciar la cámara: ' + n;
+    }
+
+    function detener() {
+      if (!scanner) return Promise.resolve();
+      var s = scanner; scanner = null;
+      return s.stop().then(function () { try { s.clear(); } catch (e) {} }).catch(function () {});
+    }
+
+    function crearScanner() {
+      var F = window.Html5QrcodeSupportedFormats || {};
+      var formatos = ['EAN_13', 'EAN_8', 'UPC_A', 'UPC_E', 'CODE_128', 'CODE_39', 'CODE_93', 'ITF', 'QR_CODE']
+        .map(function (n) { return F[n]; })
+        .filter(function (v) { return v !== undefined; });
+      var cfg = { verbose: false };
+      if (formatos.length) cfg.formatsToSupport = formatos;
+      return new Html5Qrcode('reader', cfg);
+    }
+
+    function arrancar(camId) {
+      if (iniciando) return;
+      iniciando = true;
+      detener().then(function () {
+        scanner = crearScanner();
+        var opciones = {
+          fps: 10,
+          qrbox: function (w, h) {
+            var ancho = Math.max(120, Math.min(w - 20, 360));
+            return { width: ancho, height: Math.max(80, Math.min(h - 20, Math.round(ancho * 0.45))) };
+          }
+        };
+        var destino = camId || { facingMode: 'environment' };
+        return scanner.start(destino, opciones, alDetectar, function () {})
+          .catch(function (err) {
+            // Sin cámara trasera (notebooks): probamos con la frontal
+            if (!camId) return scanner.start({ facingMode: 'user' }, opciones, alDetectar, function () {});
+            throw err;
+          });
+      }).then(function () {
+        estado('Cámara lista. Acercá un código de barras.', '');
+        iniciando = false;
+      }).catch(function (err) {
+        iniciando = false;
+        estado(mensajeError(err), 'error');
+      });
+    }
+
+    function iniciar() {
+      if (!window.Html5Qrcode) {
+        estado('No se pudo cargar el lector de códigos. Revisá la conexión a internet y recargá la página.', 'error');
+        return;
+      }
+      if (!window.opener) {
+        estado('Esta página se abre desde el botón de cámara del POS.', 'aviso');
+      }
+      Html5Qrcode.getCameras().then(function (camaras) {
+        var sel = el('camara');
+        if (camaras && camaras.length > 1) {
+          camaras.forEach(function (c, i) {
+            var o = document.createElement('option');
+            o.value = c.id; o.textContent = c.label || ('Cámara ' + (i + 1));
+            sel.appendChild(o);
+          });
+          var guardada = null;
+          try { guardada = localStorage.getItem('sc_escaner_cam'); } catch (e) {}
+          var trasera = camaras.filter(function (c) { return /back|rear|environment|trasera/i.test(c.label || ''); })[0];
+          var elegida = (guardada && camaras.some(function (c) { return c.id === guardada; })) ? guardada : (trasera ? trasera.id : camaras[0].id);
+          sel.value = elegida;
+          sel.style.display = '';
+          sel.addEventListener('change', function () {
+            try { localStorage.setItem('sc_escaner_cam', sel.value); } catch (e) {}
+            arrancar(sel.value);
+          });
+          arrancar(elegida);
+        } else if (camaras && camaras.length === 1) {
+          arrancar(camaras[0].id);
+        } else {
+          estado('No se encontró ninguna cámara conectada.', 'error');
+        }
+      }).catch(function (err) { estado(mensajeError(err), 'error'); });
+    }
+
+    // Si se cierra el POS, apagamos la cámara y cerramos esta ventana
+    setInterval(function () {
+      if (window.opener && window.opener.closed) { detener().then(function () { window.close(); }); }
+    }, 2000);
+    window.addEventListener('beforeunload', function () { detener(); });
+
+    iniciar();
+  })();
+  </script>
+</body>
+</html>
