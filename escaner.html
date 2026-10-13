@@ -84,6 +84,7 @@
       if (d.tipo !== 'sc-escaner-estado') return;
       estado(String(d.texto || ''), d.ok === false ? 'aviso' : 'ok');
       if (d.ok === false) beep(true);
+      if (d.cerrar) { setTimeout(function () { detener().then(function () { window.close(); }); }, 900); }
     });
 
     function mensajeError(err) {
