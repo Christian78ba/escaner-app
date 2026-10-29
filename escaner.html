@@ -25,6 +25,7 @@
   </header>
   <div id="reader"></div>
   <div id="estado">Iniciando cámara...</div>
+  <button id="btn-pos" style="display:none;margin:0 16px 8px;padding:12px;border:0;border-radius:12px;background:#4f46e5;color:#fff;font-weight:700;font-size:14px;cursor:pointer" onclick="try{window.opener.focus()}catch(e){}">Ir al POS para resolver el código ➜</button>
   <p class="ayuda">Acercá el código de barras a la cámara. Cada lectura se envía sola al POS. Dejá esta ventana abierta mientras vendés; se cierra sola cuando cerrás el POS.</p>
 
   <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
@@ -82,8 +83,10 @@
       if (ev.source !== window.opener) return;
       var d = ev.data || {};
       if (d.tipo !== 'sc-escaner-estado') return;
-      estado(String(d.texto || ''), d.ok === false ? 'aviso' : 'ok');
+            estado(String(d.texto || ''), d.ok === false ? 'aviso' : 'ok');
       if (d.ok === false) beep(true);
+      el('btn-pos').style.display = d.foco ? '' : 'none';
+      if (d.foco) { try { window.opener.focus(); } catch (e) {} }
       if (d.cerrar) { setTimeout(function () { detener().then(function () { window.close(); }); }, 900); }
     });
 
@@ -106,7 +109,7 @@
       var formatos = ['EAN_13', 'EAN_8', 'UPC_A', 'UPC_E', 'CODE_128', 'CODE_39', 'CODE_93', 'ITF', 'QR_CODE']
         .map(function (n) { return F[n]; })
         .filter(function (v) { return v !== undefined; });
-      var cfg = { verbose: false };
+      var cfg = { verbose: false, experimentalFeatures: { useBarCodeDetectorIfSupported: true } };
       if (formatos.length) cfg.formatsToSupport = formatos;
       return new Html5Qrcode('reader', cfg);
     }
@@ -116,18 +119,23 @@
       iniciando = true;
       detener().then(function () {
         scanner = crearScanner();
-        var opciones = {
-          fps: 10,
-          qrbox: function (w, h) {
-            var ancho = Math.max(120, Math.min(w - 20, 360));
-            return { width: ancho, height: Math.max(80, Math.min(h - 20, Math.round(ancho * 0.45))) };
-          }
-        };
+                function armarOpciones(modo) {
+          var video = { width: { ideal: 1280 }, height: { ideal: 720 }, advanced: [{ focusMode: 'continuous' }] };
+          if (camId) video.deviceId = { exact: camId }; else video.facingMode = modo;
+          return {
+            fps: 15,
+            videoConstraints: video,
+            qrbox: function (w, h) {
+              var ancho = Math.max(140, Math.min(w - 20, 420));
+              return { width: ancho, height: Math.max(100, Math.min(h - 20, Math.round(ancho * 0.6))) };
+            }
+          };
+        }
         var destino = camId || { facingMode: 'environment' };
-        return scanner.start(destino, opciones, alDetectar, function () {})
+        return scanner.start(destino, armarOpciones('environment'), alDetectar, function () {})
           .catch(function (err) {
             // Sin cámara trasera (notebooks): probamos con la frontal
-            if (!camId) return scanner.start({ facingMode: 'user' }, opciones, alDetectar, function () {});
+            if (!camId) return scanner.start({ facingMode: 'user' }, armarOpciones('user'), alDetectar, function () {});
             throw err;
           });
       }).then(function () {
